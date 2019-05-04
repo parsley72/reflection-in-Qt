@@ -4,7 +4,7 @@
 
 <!-- $theme: default -->
 
-Reflection in Qt and beyond
+Reflection in Qt and Beyond
 ===
 
 ![](images/qt.jpg)![](images/qt-rev.jpg)
