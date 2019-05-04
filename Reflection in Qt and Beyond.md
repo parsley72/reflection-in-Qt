@@ -476,6 +476,195 @@ boost::optional<T> ConvertIntToQEnumRange(uint val)
 
 ---
 
+> From: Tom Isaacson <tom.isaacson@Navico.com>  
+> Sent: Wednesday, December 19, 2018 10:09 PM  
+> To: interest@qt-project.org  
+> Subject: [Interest] Use QMetaEnum::keyCount() to initialise array
+>
+> Is it possible to use QMetaEnum::keyCount() to initialise an array? Something like:
+>
+```cpp
+    const QMetaEnum metaEnum = QMetaEnum::fromType<MyArray>();
+    int MyArray[metaEnum.keyCount()];
+```
+>
+> It seems like Q_ENUM declares functions with Q_DECL_CONSTEXPR in C++11 but I can't figure out how to get this to work.
+
+---
+
+> From: Konstantin Shegunov <kshegunov@gmail.com>  
+> Sent: Wednesday, December 19, 2018 10:37 PM
+>
+> Compiles for me (with g++ 8.2, -std=gnu++11 which is expanded from CONFIG += c++11).
+
+> From: Nikos Chantziaras <realnc@gmail.com>  
+> Sent: Thursday, December 20, 2018 6:22 AM
+>
+> Unfortunately, that's a variable length array, which is a GNU extension.
+
+---
+
+> From: Nikos Chantziaras <realnc@gmail.com>  
+> Sent: Thursday, December 20, 2018 6:29 AM
+>
+> Are you sure they're constexpr? From what I can see in Qt 5.12, keyCount() is not constexpr. It's just const.
+
+> From: Tom Isaacson <tom.isaacson@navico.com>  
+> Sent: Monday, December 31, 2018 8:29 AM
+>
+> You're right, keyCount() isn't. My confusion is that Q_ENUM declares its functions as constexpr:
+>
+```cpp
+    #define Q_ENUM(ENUM) \
+        friend Q_DECL_CONSTEXPR const QMetaObject *qt_getEnumMetaObject(ENUM) Q_DECL_NOEXCEPT { return &staticMetaObject; } \
+        friend Q_DECL_CONSTEXPR const char *qt_getEnumName(ENUM) Q_DECL_NOEXCEPT { return #ENUM; }
+```
+>
+> But I don't understand why if the functions that then use them aren't.
+
+---
+
+> From: Tom Isaacson <tom.isaacson@navico.com>  
+> Sent: Monday, December 31, 2018 8:43 AM
+>
+> Is it possible to use QMetaEnum::keyCount() to initialise an array? Something like:
+>
+```cpp
+    const QMetaEnum metaEnum = QMetaEnum::fromType<MyArray>();
+    int MyArray[metaEnum.keyCount()];
+```
+>
+> After asking this on the Qt-Interest forum I spent a bit of time investigating. Q_ENUM declares functions with Q_DECL_CONSTEXPR:
+>
+```cpp
+    #define Q_ENUM(ENUM) \
+        friend Q_DECL_CONSTEXPR const QMetaObject *qt_getEnumMetaObject(ENUM) Q_DECL_NOEXCEPT { return &staticMetaObject; } \
+        friend Q_DECL_CONSTEXPR const char *qt_getEnumName(ENUM) Q_DECL_NOEXCEPT { return #ENUM; }
+```
+>
+> In my example code above, QMetaEnum::fromType() calls these functions:
+>
+```cpp
+    template<typename T> static QMetaEnum fromType() {
+        Q_STATIC_ASSERT_X(QtPrivate::IsQEnumHelper<T>::Value,
+                          "QMetaEnum::fromType only works with enums declared as Q_ENUM or Q_FLAG");
+        const QMetaObject *metaObject = qt_getEnumMetaObject(T());
+        const char *name = qt_getEnumName(T());
+        return metaObject->enumerator(metaObject->indexOfEnumerator(name));
+    }
+```
+>
+> Where it breaks is the last line, because QMetaObject::indexOfEnumerator() uses d.data:
+<https://github.com/qt/qtbase/blob/96efc38f100686a8183f45367e54bf6cb670bdba/src/corelib/kernel/qmetaobject.cpp#L968>
+>
+```cpp
+    int QMetaObject::indexOfEnumerator(const char *name) const
+    {
+        const QMetaObject *m = this;
+        while (m) {
+            const QMetaObjectPrivate *d = priv(m->d.data);
+```
+>
+> Which is only defined as const:
+<https://github.com/qt/qtbase/blob/96efc38f100686a8183f45367e54bf6cb670bdba/src/corelib/kernel/qobjectdefs.h#L578>
+>
+```cpp
+    struct { // private data
+        const QMetaObject *superdata;
+        const QByteArrayData *stringdata;
+        const uint *data;
+```
+>
+> I don't know how the Meta-Object Compiler creates this but surely it's possible to change it to be constexpr?
+
+---
+
+> From: Thiago Macieira <thiago.macieira@intel.com>  
+> Sent: Tuesday, January 1, 2019 12:52 AM
+>
+> No, it's not.
+
+---
+
+> From: Thiago Macieira <thiago.macieira@intel.com>  
+> Sent: Thursday, January 3, 2019 12:45 AM
+>
+> Because the information is not known to the compiler at compile time. You need moc's parsing of the header in order for it to count how many enumerators are there in the enumeration. Like you said, if we had static reflections, we could do this entirely in the compiler -- we would do possibly ALL of moc as part of reflections.
+>
+> But until that happens, moc needs to run and will produce a .cpp with the count.
+>
+> If you did have access to moc's output, you could access the enumeration count in constexpr time. After all, QMetaEnum::keyCount is simply:
+>
+```cpp
+    const int offset = priv(mobj->d.data)->revision >= 8 ? 3 : 2;
+    return mobj->d.data[handle + offset];
+```
+>
+> Note that moc produces those arrays as "static const", not "constexpr", so it may not be accessible *today* at constexpr evaluation time. Or it could. I don't remember if "static const" counts as constant expression...
+>
+> The problem is that you have to #include the moc's output in the TU that wants to create the OP's array. And it must be #include'd or built by the build- system exactly *once*.
+
+---
+
+> From: Thiago Macieira <thiago.macieira@intel.com>  
+> Sent: Thursday, January 3, 2019 1:43 AM
+>
+> To be stricter: it *is* know to the compiler, but without a constexpr reflection API, we can't get the information out of the compiler and into code.
+
+---
+
+> From: Tom Isaacson <tom.isaacson@navico.com>  
+> Sent: Tuesday, January 8, 2019 7:51 AM
+>
+> I wonder if moc-ng could handle this?
+<https://woboq.com/blog/moc-with-clang.html>
+
+---
+
+> From: Olivier Goffart <olivier@woboq.com>  
+> Sent: Tuesday, January 8, 2019 8:21 PM
+>
+> Not really, even if it can generate things in a header for templates, it still generates the actual data in a .cpp file.
+As it was said before, we can't really have the contents of the QMetaObject.
+Even verdigris does the same (putting the QMetaObject data in the .cpp)
+>
+> One would have to do more research to find out if it is possible. Maybe putting more data in the QMetaEnum directly. Not sure if this is possible in a binary compatible way.
+<https://github.com/woboq/verdigris>
+
+---
+
+# Cpp Standards
+
+Herb Sutter's [Trip report: Winter ISO C++ standards meeting (Kona)](https://herbsutter.com/2019/02/23/trip-report-winter-iso-c-standards-meeting-kona/)
+> **Reflection TS v1 (David Sankel, Axel Naumann) completed.**
+> The Reflection TS international comments have now been processed and the TS is approved for publication. As I mentioned in other trip reports, note again that the TS’s current template metaprogramming-based syntax is just a placeholder; the feedback being requested is on the core “guts” of the design, and the committee already knows it intends to replace the surface syntax with a simpler programming model that uses ordinary compile-time code and not <>-style metaprogramming.
+
+---
+
+## [N4746](https://wg21.link/n4746): Working Draft, C++ Extensions for Reflection
+
+---
+
+## C++Now 2019
+
+"The C++ Reflection TS"  
+David Sankel  
+Wednesday, May 8: 09:00 - 10:30
+
+What is the C++ Reflection TS and what will it do for me? The answer: a lot. This talk explains this exciting new language feature, demonstrates how it is used, and discusses the direction reflection is taking within the C++ standardization committee. 
+
+David Sankel is a co-author of the Reflection TS and currently serves as its project editor.
+
+---
+
+## CppCon 2018
+
+“Compile-time programming and reflection in C++20 and beyond”  
+Louis Dionne  
+<https://www.youtube.com/watch?v=CRDNPwXDVp0>
+
+---
+
 * The Reflection TS: [wg21.link/n4746](https://wg21.link/n4746)
 * Standard containers and `constexpr`: [wg21.link/p0784](https://wg21.link/p0784)
 * Making `std::vector` `constexpr`: [wg21.link/p1004](https://wg21.link/p1004)
@@ -599,16 +788,13 @@ constexpr std::vector<int, 3> odds =
 
 ---
 
-## Enter P0784:
+## Enter [P0784](https://wg21.link/p0784) : More `constexpr` containers
 
-More `constexpr` containers
 * Enables *new-expressions* in `constexpr`.
 * Makes `std::allocator` usable in `constexpr`.
 * Promotes some `constexpr` objects to static storage.
 
----
-
-## The following becomes valid:
+The following becomes valid:
 
 ```cpp
 constexpr int* square(int* first, int* last)
@@ -644,9 +830,7 @@ So make try-catch `constexpr`!
 
 ---
 
-## Enter P1002:
-
-Try-catch blocks in `constexpr` functions
+## Enter [P1002](https://wg21.link/p1002): Try-catch blocks in `constexpr` functions
 
 ```cpp
 template <std::size_t N>
@@ -734,9 +918,8 @@ constexpr std::vector<int> odds =
 
 ---
 
-## Enter P0595:
+## Enter [P0595](https://wg21.link/p0595): `std::is_constant_evaluated()`
 
-* Add `std::is_constant_evaluated()`.
 * Allows detecting whether the current function is evaluated as part of a constant expression.
 
 ---
@@ -745,7 +928,7 @@ constexpr std::vector<int> odds =
 
 `constexpr` does not require compile-time evaluation.
 
-Enter `constexpr!` (P1073) - "Immediate function"
+Enter `constexpr!` ([P1073](https://wg21.link/p1073): Immediate function)
 
 ```cpp
 constexpr! int square(int x)
@@ -758,7 +941,8 @@ constexpr int x = square(3); // OK
 int y = 3;
 int z = square(y); // ERROR: square(y) is not a constant expression
 ```
-Don't exist at runtime.
+
+Functions don't exist at runtime.
 
 ---
 
@@ -805,9 +989,10 @@ constexpr auto members = ???; // List of Foo's members
 
 ---
 
-## Enter the Reflection Technical Specification (TS): N4746
+## Enter the Reflection Technical Specification (TS): [N4746](https://wg21.link/n4746)
 
 Purpose:
+
 * Figure out what this query API should look like.
 * Not the specific implementation of this API.
 * For now, the API uses template metaprogramming.
@@ -871,12 +1056,12 @@ std::ostream& operator<<(std::ostream& out, Color color)
 * Get properties of base classes: `virtual`/`public`/etc
 
 More features planned in the future:
-* Reflecting functions: P0670
+* Reflecting functions: [P0670](https://wg21.link/p0670)
 * Plans to reflect on arbitrary expressions too.
 
 ---
 
-## Final syntax is not settled yet: P0953
+## Final syntax is not settled yet: [P0953](https://wg21.link/p0953)
 
 Plan to rebase on top of `constexpr` notation.
 
@@ -896,6 +1081,7 @@ constexpr std::reflect::Type x = meta_x.get_reflected_type();
 
 using X = unreflexpr(x); // This is int!
 ```
+
 Need `unreflexpr` to translate from metadata back to type system.
 
 ---
@@ -921,7 +1107,7 @@ std::ostream& operator<<(std::ostream& out, Color color)
 
 ---
 
-## `for...`? P0589
+## `for...`? [P0589](https://wg21.link/p0589)
 
 Not a normal `for` loop.
 Expands roughly to:
@@ -961,34 +1147,17 @@ so you can have a different type at each step of the `for...` loop.
 
 # Step 3: Code Injection
 
-Alternatives considered in P0633:
+Alternatives considered in [P0633](https://wg21.link/p0633):
 
 1. Raw string injection.
 2. Programmatic API.
 3. Token-sequence injection.
 
-Go to Herb's keynote "Thoughts on a more powerful and simpler C++ (5 of N)": <https://www.youtube.com/watch?v=80BZxujhY38>
+Go to Herb's keynote:  
+"Thoughts on a more powerful and simpler C++ (5 of N)"  
+<https://www.youtube.com/watch?v=80BZxujhY38>
 
-First half is on CPPX, second on Metaclasses.
-
----
-
-## What can we hope for?
-
-Optimistic prediction:
-
-C++ 20
-
-* More `constexpr`:
-    * `std::vector`, `std::string`, `std::map`?
-    * Language features required by those.
-* `<experimental/reflect>` (syntax TBD).
-
-C++ 23
-
-* Even more `constexpr`.
-* Some code injection mechanism.
-* `<reflect>` based on `constexpr`.
+(First half is on CPPX, second on Metaclasses.)
 
 ---
 
@@ -1100,7 +1269,7 @@ Catches both "oops, forgot to lock" and "oops, took the wrong lock".
 
 ## Using a `guarded<M>` metaclass
 
-P0707R4
+[P0707](http://wg21.link/p0707) R4
 
 ```cpp
 // Today a metaclass is defined as template<type T> (T source)
@@ -1132,223 +1301,27 @@ class(guarded<mutex_type>) MyData
 
 ---
 
-# Features
+## [P0707](http://wg21.link/p0707) R3: Metaclasses: Generative C++
 
-- **Slides are written in Markdown.**
-- Cross-platform. Supports Windows, Mac, and Linux
-- Live Preview with 3 modes
-- Slide themes (`default`, `gaia`) and custom background images
-- Supports emoji :heart:
-- Render maths in your slides
-- Export your slides to PDF
+4. Applying metaclasses: Qt moc and C++/WinRT
+
+![](images/Qt-moc.png)
 
 ---
 
-# How to write slides?
+## What can we hope for?
 
-Split slides by horizontal ruler `---`. It's very simple.
+Optimistic prediction:
 
-```md
-# Slide 1
+C++ 20
 
-foobar
+* More `constexpr`:
+    * `std::vector`, `std::string`, `std::map`?
+    * Language features required by those.
+* `<experimental/reflect>` (syntax TBD).
 
----
+C++ 23
 
-# Slide 2
-
-foobar
-```
-
-> *Notice: Ruler (`<hr>`) is not displayed in Marp.*
-
----
-
-# Directives
-
-Marp's Markdown has extended directives to affect slides.
-
-Insert HTML comment as below:
-```html
-<!-- {directive_name}: {value} -->
-```
-
-```html
-<!--
-{first_directive_name}:  {value}
-{second_directive_name}: {value}
-...
--->
-```
----
-
-## Global Directives
-
-### `$theme`
-
-Changes the theme of all the slides in the deck. You can also change from `View -> Theme` menu.
-
-```
-<!-- $theme: gaia -->
-```
-
-|Theme name|Value|Directive|
-|:-:|:-:|:-|
-|***Default***|default|`<!-- $theme: default -->`
-|**Gaia**|gaia|`<!-- $theme: gaia -->`
-
-
----
-
-### `$width` / `$height`
-
-Changes width and height of all the slides.
-
-You can use units: `px` (default), `cm`, `mm`, `in`, `pt`, and `pc`.
-
-```html
-<!-- $width: 12in -->
-```
-
-### `$size`
-
-Changes slide size by presets.
-
-Presets: `4:3`, `16:9`, `A0`-`A8`, `B0`-`B8` and suffix of `-portrait`.
-
-```html
-<!-- $size: 16:9 -->
-```
-
-<!--
-$size: a4
-
-Example is here. Global Directive is enabled in anywhere.
-It apply the latest value if you write multiple same Global Directives.
--->
-
----
-
-## Page Directives
-
-The page directive would apply to the  **current page and the following pages**.
-You should insert it *at the top* to apply it to all slides.
-
-### `page_number`
-
-Set `true` to show page number on slides. *See lower right!*
-
-```html
-<!-- page_number: true -->
-```
-
-<!--
-page_number: true
-
-Example is here. Pagination starts from this page.
-If you use multi-line comment, directives should write to each new lines.
--->
-
----
-
-### `template`
-
-Set to use template of theme.
-
-The `template` directive just enables that using theme supports templates.
-
-```html
-<!--
-$theme: gaia
-template: invert
--->
-
-Example: Set "invert" template of Gaia theme.
-```
-
----
-
-### `footer`
-
-Add a footer to the current slide and all of the following slides
-
-```html
-<!-- footer: This is a footer -->
-```
-
-Example: Adds "This is a footer" in the bottom of each slide
-
----
-
-### `prerender`
-
-Pre-renders a slide, which can prevent issues with very large background images.
-
-```html
-<!-- prerender: true -->
-```
-
----
-
-## Pro Tips
-
-#### Apply page directive to current slide only
-
-Page directive can be selectively applied to the current slide by prefixing the page directive with `*`.
-
-```
-<!-- *page_number: false -->
-<!-- *template: invert -->
-```
-
-<!--
-*page_number: false
-
-Example is here.
-Page number is not shown in current page, but it's shown on later pages.
--->
-
----
-
-#### Slide background Images
-
-You can set an image as a slide background.
-
-```html
-![bg](mybackground.png)
-```
-
-Options can be provided after `bg`, for example `![bg original](path)`.
-
-Options include:
-
-- `original` to include the image without any effects
-- `x%` to include the  image at `x` percent of the slide size
-
-Include multiple`![bg](path)` tags to stack background images horizontally.
-
-![bg](images/background.png)
-
----
-
-#### Maths Typesetting
-
-Mathematics is typeset using the `KaTeX` package. Use `$` for inline maths, such as $ax^2+bc+c$, and `$$` for block maths:
-
-$$I_{xx}=\int\int_Ry^2f(x,y)\cdot{}dydx$$
-
-```html
-This is inline: $ax^2+bx+c$, and this is block:
-
-$$I_{xx}=\int\int_Ry^2f(x,y)\cdot{}dydx$$
-
-```
-
----
-
-## Enjoy writing slides! :+1:
-
-### https://github.com/yhatt/marp
-
-Copyright &copy; 2016 [Yuki Hattori](https://github.com/yhatt)
-This software released under the [MIT License](https://github.com/yhatt/marp/blob/master/LICENSE).
+* Even more `constexpr`.
+* Some code injection mechanism.
+* `<reflect>` based on `constexpr`.
