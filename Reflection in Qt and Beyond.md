@@ -59,7 +59,7 @@ Templates are a builtin mechanism in C++ that allows the compiler to generate co
 
 ---
 
-### Legacy code
+## Legacy code
 
 ```cpp
 class tColoredObject : public QObject
@@ -115,12 +115,12 @@ class tColoredObject : public QObject
 public:
     enum class eColor
     {
-        ColorRed = 1,
-        ColorBlue = 2,
-        ColorGreen = 3
+        Red = 1,
+        Blue = 2,
+        Green = 3
     };
 
-    tColoredObject() : m_color(eColor::Red) {}
+    tColoredObject() : m_color(tColoredObject::eColor::Red) {}
 
 private:
     eColor m_color;
@@ -138,77 +138,27 @@ void HandleColor(tColoredObject::eColor color)
 {
     switch (color)
     {
-        case eColor::Red: qDebug("Red"); break;
-        case eColor::Blue: qDebug("Blue"); break;
-        case eColor::Green: qDebug("Green"); break;
+        case tColoredObject::eColor::Red: qDebug("Red"); break;
+        case tColoredObject::eColor::Blue: qDebug("Blue"); break;
+        case tColoredObject::eColor::Green: qDebug("Green"); break;
     }
 }
 ```
 
-<!-- But this means the assert we get if the enum class is an undefined value has gone so it's not an exact replacement. -->
+But this means the assert we get if the enum class is an undefined value has gone so it's not an exact replacement.
 
 ---
 
-# Q_ENUM
-
-I was looking into this and I found [New in Qt 5.5: Q_ENUM and the C++ tricks behind it](https://woboq.com/blog/q_enum.html). This explains the new [Q_ENUM()](https://doc.qt.io/qt-5/qobject.html#Q_ENUM) which replaces Q_DECLARE_METATYPE() for enums and removes the need to call qRegisterMetaType():
+## Enum class can still be an unspecified value
 
 ```cpp
-class tColoredObject : public QObject
-{
-    Q_OBJECT
-
-public:
-    enum class eColor
-    {
-        ColorRed = 1,
-        ColorBlue = 2,
-        ColorGreen = 3
-    };
-    Q_ENUM(eColor)
-
-    tColoredObject() : m_color(eColor::Red) {}
-
-private:
-    eColor m_color;
-};
+    tColoredObject::eColor color = 5; // error: cannot convert 'int' to 'tColoredObject::eColor' in initialization
+    color = static_cast<tColoredObject::eColor>(5); // ok
 ```
 
----
+[expr.static.cast]/10:
 
-This is great, but it also means you can use Qt's reflection. I've added `AssertIfValueIsOutsideQEnumRange()` which asserts if the enum class value is undefined:
-
-```cpp
-template <typename T, typename V>
-void AssertIfValueIsOutsideQEnumRange(V val)
-{
-    const QMetaEnum metaEnum = QMetaEnum::fromType<T>();
-    const int nVal = static_cast<int>(val);
-    const char* keyStr = metaEnum.valueToKey(nVal);
-    if (keyStr == nullptr)
-    {
-        const QString output =
-            QString("AssertIfValueIsOutsideQEnumRange(%1): outside range of %2::%3").arg(nVal).arg(metaEnum.scope()).arg(metaEnum.name());
-        qDebug(output);
-    }
-    assert(keyStr != nullptr);
-}
-```
-
-We can use this to recreate the assert we removed from the switch:
-
-```cpp
-void HandleColor(tColoredObject::eColor color)
-{
-    switch (color)
-    {
-        case eColor::Red: qDebug("Red"); break;
-        case eColor::Blue: qDebug("Blue"); break;
-        case eColor::Green: qDebug("Green"); break;
-    }
-    AssertIfValueIsOutsideQEnumRange<tColoredObject::eColor>(color);
-}
-```
+> A value of integral or enumeration type can be explicitly converted to a complete enumeration type. The value is unchanged if the original value is within the range of the enumeration values (7.2). Otherwise, the behavior is undefined.
 
 ---
 
@@ -252,8 +202,6 @@ T EnumRangeMax()
 ---
 
 ```cpp
-namespace
-{
 //-----------------------------------------------------------------------------
 //! Function to convert a value (of unspecified type) to an enum. The value to be converted
 //! must lie within an enum linear range where:
@@ -276,75 +224,118 @@ T ConvertValueToEnumLinearRange(V val)
     // The value exists within the range, so provide the converted the value
     return static_cast<T>(val);
 }
-} // namespace
-
-//-----------------------------------------------------------------------------
-//! Function to convert an int (or any value that provides an implicit conversion
-//! to an int) to an enum. This is a specialization
-//! of the more general ConvertValueToEnumLinearRange<T,V> function template to ensure
-//! that only integral values offer a conversion.
-//-----------------------------------------------------------------------------
-template <typename T>
-T ConvertIntToEnumLinearRange(int val)
-{
-    return ConvertValueToEnumLinearRange<T, int>(val);
-}
 ```
+
 ---
 
+We can use this to recreate the assert we removed from the switch:
+<https://godbolt.org/z/QwJqSO>
+
 ```cpp
-enum class eThingType
+template <>
+tColoredObject::eColor EnumRangeMin<tColoredObject::eColor>()
 {
-    None,
-    Possum,
-    Banana
-};
-
+    return tColoredObject::eColor::Red;
+}
 template <>
-eThingType EnumRangeMin<eThingType>();
-template <>
-eThingType EnumRangeMax<eThingType>();
+tColoredObject::eColor EnumRangeMax<tColoredObject::eColor>()
+{
+    return tColoredObject::eColor::Green;
+}
 
-//! Convert an eThingType to a string representation.
-QString ThingTypeEnumToString(eThingType thingType);
+void HandleColor(tColoredObject::eColor color)
+{
+    switch (color)
+    {
+        case tColoredObject::eColor::Red: printf("Red"); break;
+        case tColoredObject::eColor::Blue: printf("Blue"); break;
+        case tColoredObject::eColor::Green: printf("Green"); break;
+    }
+    assert(color == ConvertValueToEnumLinearRange<tColoredObject::eColor>(color));
+}
 ```
 
+---
+
+# Q_ENUM
+
+I was looking into this and I found [New in Qt 5.5: Q_ENUM and the C++ tricks behind it](https://woboq.com/blog/q_enum.html). This explains the new [Q_ENUM()](https://doc.qt.io/qt-5/qobject.html#Q_ENUM) which replaces Q_DECLARE_METATYPE() for enums and removes the need to call qRegisterMetaType():
+
 ```cpp
-template <>
-eThingType EnumRangeMin<eThingType>()
+class tColoredObject : public QObject
 {
-    return eThingType::None;
+    Q_OBJECT
+
+public:
+    enum class eColor
+    {
+        Red = 1,
+        Blue = 2,
+        Green = 3
+    };
+    Q_ENUM(eColor)
+
+    tColoredObject() : m_color(tColoredObject::eColor::Red) {}
+
+private:
+    eColor m_color;
+};
+```
+
+---
+
+This is great, but it also means you can use Qt's reflection. I've added `AssertIfValueIsOutsideQEnumRange()` which asserts if the enum class value is undefined:
+
+```cpp
+template <typename T, typename V>
+void AssertIfValueIsOutsideQEnumRange(V val)
+{
+    const QMetaEnum metaEnum = QMetaEnum::fromType<T>();
+    const int nVal = static_cast<int>(val);
+    const char* keyStr = metaEnum.valueToKey(nVal);
+    if (keyStr == nullptr)
+    {
+        const QString output =
+            QString("AssertIfValueIsOutsideQEnumRange(%1): outside range of %2::%3").arg(nVal).arg(metaEnum.scope()).arg(metaEnum.name());
+        qDebug(output);
+    }
+    assert(keyStr != nullptr);
 }
-template <>
-eThingType EnumRangeMax<eThingType>()
+```
+
+This replaces the assert:
+
+```cpp
+void HandleColor(tColoredObject::eColor color)
 {
-    return eThingType::Banana;
+    switch (color)
+    {
+        case tColoredObject::eColor::Red: qDebug("Red"); break;
+        case tColoredObject::eColor::Blue: qDebug("Blue"); break;
+        case tColoredObject::eColor::Green: qDebug("Green"); break;
+    }
+    AssertIfValueIsOutsideQEnumRange<tColoredObject::eColor>(color);
 }
+```
 
-QString ThingTypeEnumToString(eThingType thingType)
+---
+
+## Q_NAMESPACE
+
+Q_ENUM can only be used within a QObject class.
+
+[New in Qt 5.8: meta-object support for namespaces](https://www.kdab.com/new-qt-5-8-meta-object-support-namespaces/)
+
+```cpp
+namespace MyNamespace
 {
-    QString str;
+    Q_NAMESPACE
 
-    switch (thingType)
-    {
-    case eThingType::None:
-    {
-        str = "None";
-    }
-    break;
-    case eThingType::Possum:
-    {
-        str = "Possum";
-    }
-    break;
-    case eThingType::Banana:
-    {
-        str = "Banana";
-    }
-    break;
-    }
-
-    return str;
+    enum class SomeEnum {
+        Foo,
+        Bar
+    };
+    Q_ENUM_NS(SomeEnum)
 }
 ```
 
@@ -633,7 +624,7 @@ Even verdigris does the same (putting the QMetaObject data in the .cpp)
 
 ---
 
-# Cpp Standards
+# C++ Standards
 
 Herb Sutter's [Trip report: Winter ISO C++ standards meeting (Kona)](https://herbsutter.com/2019/02/23/trip-report-winter-iso-c-standards-meeting-kona/)
 > **Reflection TS v1 (David Sankel, Axel Naumann) completed.**
@@ -1325,3 +1316,11 @@ C++ 23
 * Even more `constexpr`.
 * Some code injection mechanism.
 * `<reflect>` based on `constexpr`.
+
+---
+
+## Cppx / Metaclasses
+
+<https://cppx.godbolt.org/>
+
+---
