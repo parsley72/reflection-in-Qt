@@ -954,7 +954,7 @@ struct Foo
 }
 
 using MetaFoo = reflexpr(Foo); // Returns magic type
-Using Members = std::reflect::get_data_members_t<MetaFoo>; // Another magic type
+using Members = std::reflect::get_data_members_t<MetaFoo>; // Another magic type
 
 using MetaX = std::reflect::get_element_t<0, Members>; // Not an int!
 constexpr bool is_public = std::reflect::is_public_v<MetaX>;
