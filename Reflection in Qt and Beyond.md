@@ -260,7 +260,7 @@ void HandleColor(tColoredObject::eColor color)
 
 # Q_ENUM
 
-I was looking into this and I found [New in Qt 5.5: Q_ENUM and the C++ tricks behind it](https://woboq.com/blog/q_enum.html). This explains the new [Q_ENUM()](https://doc.qt.io/qt-5/qobject.html#Q_ENUM) which replaces Q_DECLARE_METATYPE() for enums and removes the need to call qRegisterMetaType().
+I was looking into this and I found [New in Qt 5.5: Q_ENUM and the C++ tricks behind it](https://woboq.com/blog/q_enum.html). This explains the new [Q_ENUM()](https://doc.qt.io/qt-5/qobject.html#Q_ENUM).
 
 ---
 
